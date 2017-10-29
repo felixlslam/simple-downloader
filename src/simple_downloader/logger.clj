@@ -15,8 +15,8 @@
     (clojure.string/join "\n" json-messages)))
 
 (defn init-timbre []
-  ;FIXME - Don't print to console also
   (timbre/merge-config!
     {:appenders {
+                 :println nil
                  :spit (merge (appenders/spit-appender {:fname "./log/simple-downloader.log"}) {:output-fn json-output-fn})
                  }}))
