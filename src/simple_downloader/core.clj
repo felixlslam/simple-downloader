@@ -5,45 +5,46 @@
             [compojure.core :refer :all]
             [compojure.route :as route]
             [simple-downloader.downloader :as downloader]
-            [clojure.string :as string])
+            [simple-downloader.authenticator :as authenticator]
+            [clojure.string :as string]
+            [ring.util.response :as resp]
+            [taoensso.timbre :as timbre :refer [log trace debug info warn error fatal spy]]
+            [simple-downloader.logger :as logger]
+            [ring.adapter.jetty :as jetty]
+            [environ.core :refer [env]]
+            [clojure.data.json :as json])
   (:gen-class)
   (:import (java.io FileInputStream File)
            (org.apache.commons.io FileUtils)))
 
-(defn -main
-  "I don't do a whole lot ... yet."
-  [& args]
-  (println "Hello, World!"))
 
-(defn getfilename-from-url [url]
-  (let [filename-in-url (string/replace url #".*/" "")]
-    (if (= filename-in-url "")
-      "downloaded_file"
-      filename-in-url)))
 
 (defroutes app
-           (GET "/" [] {:status       200
-                        :content-type "text/html"
-                        :body         "Hello World."})
-           (GET "/download" [url]
-             (let [filename (getfilename-from-url url)
-                   destpath (str "./" filename)]
-               (try
+           (GET "/" [] (resp/content-type (resp/resource-response "index.html" {:root "public"}) "text/html"))
+           (POST "/download" [username password url :as request]
+             ;FIXME : Change IPv6 address to IPv4
+             (let [client-ip (or (get-in request [:headers "x-forwarded-for"]) (:remote-addr request))]
+               (if (authenticator/authenticate username password)
+                 (downloader/download-handler client-ip username password url)
                  (do
-                   (downloader/download url destpath)
-                   {:status  200
-                    :headers {"Content-Type"        "application/octet-stream"
-                              "Content-Disposition" (format "attachment; filename=\"%s\"" filename)}
-                    :body    (FileInputStream. destpath)}
-                   )
-                 (catch Exception e
-                   {:status       404
-                    :content-type "text/html"
-                    :body         (str "Failed to download the file. \n Exception: " (.getMessage e))})
-                 (finally
-                   (FileUtils/deleteQuietly (File. destpath)))))))
+                   (timbre/warn (json/write-str
+                                  {:client-ip    client-ip
+                                   :username     username
+                                   :download-url url
+                                   :result       "FAILED"
+                                   :Exception    "Authentication Failed"}))
+                   {:status 403 :content-type "text/html" :body "Authentication Failed !"})))))
 
 (def handler
   (-> app
       (wrap-keyword-params)
       (wrap-params)))
+
+(defn -main
+  [& args]
+  (logger/init-timbre)
+  (jetty/run-jetty handler {:port         (Integer/parseInt (env :http-port))
+                            :ssl?         true
+                            :ssl-port     (Integer/parseInt (env :https-port))
+                            :keystore     (env :keystore)
+                            :key-password (env :keystore-pass)}))
